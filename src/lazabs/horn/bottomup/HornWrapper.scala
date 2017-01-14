@@ -218,9 +218,34 @@ class HornWrapper(constraints: Seq[HornClause],
     }
 
     result match {
-      case Left(res) =>
-        if (lazabs.GlobalParameters.get.needFullSolution) {
+      case Left(res) => {
+        if (lazabs.GlobalParameters.get.needFullSolution ||
+            lazabs.GlobalParameters.get.didIgnoreCEX) {
           val fullSol = preprocBackTranslator translate res
+
+          if (lazabs.GlobalParameters.get.didIgnoreCEX) {
+            // report clauses that are not yet satisfied
+            // (which can only be assertion clauses)
+            SimpleAPI.withProver { p =>
+            import p._
+            for (clause@Clause(head, body, constraint) <-
+                   unsimplifiedClauses.iterator;
+                 if (head.pred == HornClauses.FALSE)) {
+              if (scope {
+                addConstants(clause.constants.toSeq.sortWith(_.name < _.name))
+                !! (constraint)
+                for (IAtom(pred, args) <- body)
+                  !! (subst(fullSol(pred), args.toList, 0))
+                ?? (false)
+                ??? != ProverStatus.Valid
+              }) {
+               println("VIOLATED CLAUSE:")
+               println(clause.toSMTString)
+               println
+//               println(clause)
+              }
+             }}
+          } else
 
           // verify correctness of the solution
           if (lazabs.Main.assertions) assert(SimpleAPI.withProver { p =>
@@ -242,7 +267,7 @@ class HornWrapper(constraints: Seq[HornClause],
           // only keep relation symbols that were also part of the orginal problem
           Left(res filterKeys predPool.values.toSet)
         }
-        
+      }
       case Right(cex) =>
         if (lazabs.GlobalParameters.get.needFullCEX) {
           val fullCEX = preprocBackTranslator translate cex

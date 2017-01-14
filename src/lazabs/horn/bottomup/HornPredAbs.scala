@@ -659,6 +659,10 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
   var matchCount = 0
   var matchTime : Long = 0  
 
+  val refinementDeadline =
+    for (t <- lazabs.GlobalParameters.get.refinementTimeout)
+    yield (startTime + t)
+
   // first find out which theories are relevant
   val theories = {
     val coll = new TheoryCollector
@@ -1451,8 +1455,15 @@ class HornPredAbs[CC <% HornClauses.ConstraintClause]
     } else {
       // assumptions are consistent
       clause.head._1.pred match {
-        case HornClauses.FALSE =>
-          throw new Counterexample(from, clause)
+        case HornClauses.FALSE => refinementDeadline match {
+          case Some(d) if (System.currentTimeMillis > d) => {
+            println("Ignoring counterexample")
+            lazabs.GlobalParameters.get.didIgnoreCEX = true
+            None
+          }
+          case _ =>
+            throw new Counterexample(from, clause)
+        }
         case _ => {
           val state = genAbstractState(assumptions,
                                        clause.head._1, clause.head._2,

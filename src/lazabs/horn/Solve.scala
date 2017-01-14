@@ -115,9 +115,15 @@ object Solve {
           case Left(solution) => {
             lazabs.GlobalParameters.get.format match {
               case lazabs.GlobalParameters.InputFormat.SMTHorn =>
-                println("sat")
+                println((if (lazabs.GlobalParameters.get.didIgnoreCEX)
+                           "p"
+                         else
+                           "") + "sat")
               case _ =>
-                println("SOLVABLE")
+                println((if (lazabs.GlobalParameters.get.didIgnoreCEX)
+                           "PARTIALLY "
+                         else
+                           "") + "SOLVABLE")
             }
 
             if (lazabs.GlobalParameters.get.displaySolutionProlog) {

@@ -64,6 +64,8 @@ class GlobalParameters {
   var funcName = "main"
   var solFileName = ""
   var timeout:Option[Int] = None
+  var refinementTimeout:Option[Int] = None
+  var didIgnoreCEX = false
   var spuriousness = true
   var searchMethod = DFS
   var drawRTree = false
@@ -272,6 +274,9 @@ object Main {
       case tTimeout :: rest if (tTimeout.startsWith("-t:")) =>
         val time = (java.lang.Float.parseFloat(tTimeout.drop(3)) * 1000).toInt
         timeout = Some(time); arguments(rest)
+      case tTimeout :: rest if (tTimeout.startsWith("-rt:")) =>
+        val time = (java.lang.Float.parseFloat(tTimeout.drop(4)) * 1000).toInt
+        refinementTimeout = Some(time); arguments(rest)
       case mFuncName :: rest if (mFuncName.startsWith("-m:")) => funcName = mFuncName drop 3; arguments(rest)
       case sSolFileName :: rest if (sSolFileName.startsWith("-s:")) => solFileName = sSolFileName.drop(3); arguments(rest)
       case "-log" :: rest => setLogLevel(2); arguments(rest)

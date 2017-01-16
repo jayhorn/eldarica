@@ -75,6 +75,14 @@ class HornWrapper(constraints: Seq[HornClause],
     }
   }
 
+  def printSMTClauses(cs : Seq[Clause]) = {
+    for (c <- cs) {
+      println(c.toSMTString);
+      println("---")
+    }
+  }
+
+
   private val translator = new HornTranslator
   import translator._
   
@@ -229,8 +237,12 @@ class HornWrapper(constraints: Seq[HornClause],
             SimpleAPI.withProver { p =>
             import p._
             for (clause@Clause(head, body, constraint) <-
-                   unsimplifiedClauses.iterator;
+                   simplifiedClauses.iterator;
                  if (head.pred == HornClauses.FALSE)) {
+              val clauseString = clause.toSMTString
+              println("**Clauses")
+              printSMTClauses(simplifiedClauses)
+              println("**End Clauses")
               if (scope {
                 addConstants(clause.constants.toSeq.sortWith(_.name < _.name))
                 !! (constraint)
@@ -240,9 +252,8 @@ class HornWrapper(constraints: Seq[HornClause],
                 ??? != ProverStatus.Valid
               }) {
                println("VIOLATED CLAUSE:")
-               println(clause.toSMTString)
-               println
-//               println(clause)
+               println(clauseString)
+               println("End violated")
               }
              }}
           } else

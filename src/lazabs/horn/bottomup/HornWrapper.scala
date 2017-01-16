@@ -34,6 +34,7 @@ import ap.parser._
 import IExpression._
 import ap.SimpleAPI
 import ap.SimpleAPI.ProverStatus
+import ap.util.Seqs
 
 import lazabs.horn.preprocessor.{DefaultPreprocessor, HornPreprocessor}
 import lazabs.horn.bottomup.HornClauses._
@@ -231,14 +232,15 @@ class HornWrapper(constraints: Seq[HornClause],
             lazabs.GlobalParameters.get.didIgnoreCEX) {
           val fullSol = preprocBackTranslator translate res
 
-              println("**Clauses")
+              println("**All Clauses")
               printSMTClauses(unsimplifiedClauses)
               println("**End Clauses")
 
-          if (lazabs.GlobalParameters.get.didIgnoreCEX) {
+          if (lazabs.GlobalParameters.get.didIgnoreCEX)
+                              SimpleAPI.withProver { p =>
             // report clauses that are not yet satisfied
             // (which can only be assertion clauses)
-            val violatedClauses = SimpleAPI.withProver { p =>
+            val violatedClauses = {
               import p._
               for (clause@Clause(head, body, constraint) <-
                      unsimplifiedClauses;
@@ -255,13 +257,64 @@ class HornWrapper(constraints: Seq[HornClause],
               yield clause
             }
 
-            for (clause <- violatedClauses) {
-               println("VIOLATED CLAUSE:")
-               println(clause.toPrettyString)
-               println("End violated")
+            println
+            println("**VIOLATED CLAUSES:")
+            printSMTClauses(violatedClauses)
+            println("**End Violated")
+
+            val violatingPreds =
+              (for (clause <- violatedClauses.iterator;
+                    p <- clause.predicates.iterator;
+                    if p != HornClauses.FALSE)
+               yield p).toSet
+
+            println
+            println("**Violating Predicates:")
+            for (pred <- violatingPreds.toList.sortWith(
+                           _.name < _.name)) p.scope {
+              import p._
+              println(pred.name + "(" +
+                    (for (i <- 0 until pred.arity) yield ("v" + i)).mkString(", ") + "):")
+              val consts = createConstants("v", 0 until pred.arity).toList
+              val sol = VariableSubstVisitor(fullSol(pred), (consts, 0))
+              PrincessLineariser printExpression sol
+              println
+            }
+            println("**End Predicates")
+             
+            val relatedClauses =
+              (for (clause <- unsimplifiedClauses.iterator;
+                    if !Seqs.disjoint(violatingPreds, clause.predicates) &&
+                       !(violatedClauses contains clause))
+               yield clause).toList
+
+            println
+            println("**Other Clauses with Violating Predicates:")
+            printSMTClauses(relatedClauses)
+            println("**End Clauses")
+
+            println
+            println("**Instantiated Clauses with Violating Predicates:")
+
+            val predicateMapping =
+              fullSol filterKeys { p => !(violatingPreds contains p) }
+
+            for (clause <- relatedClauses) p.scope {
+              import p._
+
+              val substClause =
+                UniformSubstVisitor(clause.toFormula, predicateMapping)
+              addRelations(clause.predicates.toSeq.sortWith(
+                           _.name < _.name))
+              val intClause = asConjunction(substClause)
+              val simpClause = Transform2Prenex(asIFormula(intClause))
+              PrincessLineariser printExpression simpClause
+              println
+              println("---")
             }
 
-             
+            println("**End Clauses")
+
           } else
 
           // verify correctness of the solution
@@ -557,4 +610,31 @@ class HornTranslator {
       })
     }
   
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+object UniformSubstVisitor
+       extends CollectingVisitor[Map[Predicate, IFormula], IExpression] {
+  def apply(t : IExpression, subst : Map[Predicate, IFormula]) : IExpression =
+    UniformSubstVisitor.visit(t, subst)
+  def apply(t : ITerm, subst : Map[Predicate, IFormula]) : ITerm =
+    apply(t.asInstanceOf[IExpression], subst).asInstanceOf[ITerm]
+  def apply(t : IFormula, subst : Map[Predicate, IFormula]) : IFormula =
+    apply(t.asInstanceOf[IExpression], subst).asInstanceOf[IFormula]
+
+  override def preVisit(t : IExpression,
+                        subst : Map[Predicate, IFormula]) : PreVisitResult =
+    t match {
+      case IAtom(p, args) => (subst get p) match {
+        case Some(replacement) =>
+          ShortCutResult(VariableSubstVisitor(replacement, (args.toList, 0)))
+        case None => KeepArg
+      }
+      case _ => KeepArg
+    }
+
+  def postVisit(t : IExpression,
+                subst : Map[Predicate, IFormula],
+                subres : Seq[IExpression]) : IExpression = t update subres
 }

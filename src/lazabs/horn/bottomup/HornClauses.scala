@@ -224,6 +224,13 @@ object HornClauses {
     }
 
     def toSMTString : String = SMTLineariser asString this.toFormula
+
+    def toPrettyString : String =
+      ap.DialogUtil.asString {
+        val f = this.toFormula
+        val f2 = (new Simplifier)(f)
+        PrincessLineariser printExpression f2
+      }
   }
 
   class PrologApplier(constr : IFormula) {

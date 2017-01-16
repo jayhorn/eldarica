@@ -77,7 +77,7 @@ class HornWrapper(constraints: Seq[HornClause],
 
   def printSMTClauses(cs : Seq[Clause]) = {
     for (c <- cs) {
-      println(c.toSMTString);
+      println(c.toPrettyString);
       println("---")
     }
   }
@@ -231,31 +231,37 @@ class HornWrapper(constraints: Seq[HornClause],
             lazabs.GlobalParameters.get.didIgnoreCEX) {
           val fullSol = preprocBackTranslator translate res
 
+              println("**Clauses")
+              printSMTClauses(unsimplifiedClauses)
+              println("**End Clauses")
+
           if (lazabs.GlobalParameters.get.didIgnoreCEX) {
             // report clauses that are not yet satisfied
             // (which can only be assertion clauses)
-            SimpleAPI.withProver { p =>
-            import p._
-            for (clause@Clause(head, body, constraint) <-
-                   simplifiedClauses.iterator;
-                 if (head.pred == HornClauses.FALSE)) {
-              val clauseString = clause.toSMTString
-              println("**Clauses")
-              printSMTClauses(simplifiedClauses)
-              println("**End Clauses")
-              if (scope {
-                addConstants(clause.constants.toSeq.sortWith(_.name < _.name))
-                !! (constraint)
-                for (IAtom(pred, args) <- body)
-                  !! (subst(fullSol(pred), args.toList, 0))
-                ?? (false)
-                ??? != ProverStatus.Valid
-              }) {
+            val violatedClauses = SimpleAPI.withProver { p =>
+              import p._
+              for (clause@Clause(head, body, constraint) <-
+                     unsimplifiedClauses;
+                   if (head.pred == HornClauses.FALSE);
+                   if (scope {
+                         addConstants(clause.constants.toSeq.sortWith(
+                           _.name < _.name))
+                         !! (constraint)
+                         for (IAtom(pred, args) <- body)
+                           !! (subst(fullSol(pred), args.toList, 0))
+                         ?? (false)
+                         ??? != ProverStatus.Valid
+                       }))
+              yield clause
+            }
+
+            for (clause <- violatedClauses) {
                println("VIOLATED CLAUSE:")
-               println(clauseString)
+               println(clause.toPrettyString)
                println("End violated")
-              }
-             }}
+            }
+
+             
           } else
 
           // verify correctness of the solution

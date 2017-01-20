@@ -228,7 +228,7 @@ object HornClauses {
     def toPrettyString : String =
       ap.DialogUtil.asString {
         val f = this.toFormula
-        val f2 = Transform2Prenex((new Simplifier)(f))
+        val f2 = Transform2Prenex((new Simplifier (0))(f))
         PrincessLineariser printExpression f2
       }
   }

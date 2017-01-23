@@ -307,7 +307,8 @@ class HornWrapper(constraints: Seq[HornClause],
               addRelations(clause.predicates.toSeq.sortWith(
                            _.name < _.name))
               val intClause = asConjunction(substClause)
-              val simpClause = Transform2Prenex(asIFormula(intClause))
+              val simpClause =
+                Transform2Prenex((new Simplifier (0))(Internal2InputAbsy(intClause, Map())))
               PrincessLineariser printExpression simpClause
               println
               println("---")

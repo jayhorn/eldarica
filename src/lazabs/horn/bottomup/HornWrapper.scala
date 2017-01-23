@@ -78,11 +78,45 @@ class HornWrapper(constraints: Seq[HornClause],
 
   def printSMTClauses(cs : Seq[Clause]) = {
     for (c <- cs) {
-      println(c.toPrettyString);
+      prettyPrintClause(c.toFormula)
       println("---")
     }
   }
 
+  def prettyPrintClause(clause : IFormula) = {
+    val simpClause = TaskClauseSimplifier(clause)
+
+    def sortVariables(c : IFormula) : IFormula = c match {
+      case IQuantified(Quantifier.ALL, sub) =>
+        IQuantified(Quantifier.ALL, sortVariables(sub))
+      case c => {
+        val atoms = LineariseVisitor(c, IBinJunctor.Or) filter {
+          case f@INot(_ : IAtom) => true
+          case f : IAtom => true
+          case _ => false
+        }
+        val vars = SymbolCollector variablesSorted or(atoms)
+
+        if (vars.isEmpty) {
+          c
+        } else {
+          val maxInd = (for (IVariable(v) <- vars) yield v).max
+          val permutation =
+            vars ++ (for (n <- 0 until maxInd;
+                          if !(vars contains v(n))) yield v(n))
+          val invPermutation = new Array[Int](maxInd + 1)
+          for ((IVariable(n), i) <- permutation.iterator.zipWithIndex)
+            invPermutation(n) = (maxInd - i) - n
+          VariablePermVisitor(c, IVarShift(invPermutation.toList, 0))
+        }
+      }
+    }
+
+    val simpClause2 = sortVariables(simpClause)
+
+    PrincessLineariser printExpression simpClause2
+    println
+  }
 
   private val translator = new HornTranslator
   import translator._
@@ -307,10 +341,7 @@ class HornWrapper(constraints: Seq[HornClause],
               addRelations(clause.predicates.toSeq.sortWith(
                            _.name < _.name))
               val intClause = asConjunction(substClause)
-              val simpClause =
-                Transform2Prenex((new Simplifier (0))(Internal2InputAbsy(intClause, Map())))
-              PrincessLineariser printExpression simpClause
-              println
+              prettyPrintClause(Internal2InputAbsy(intClause, Map()))
               println("---")
             }
 
@@ -638,4 +669,42 @@ object UniformSubstVisitor
   def postVisit(t : IExpression,
                 subst : Map[Predicate, IFormula],
                 subres : Seq[IExpression]) : IExpression = t update subres
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+object TaskClauseSimplifier extends Simplifier(0, false) {
+  import IBinJunctor._
+
+  private def sortLiterals(expr : IExpression) : IExpression = expr match {
+    case IBinFormula(Or, IBinFormula(Or, f1, f2), f3) =>
+      IBinFormula(Or, f1, IBinFormula(Or, f2, f3))
+
+    case IBinFormula(Or, INot(_ : IAtom), _) =>
+      expr
+    case IBinFormula(Or, _, _ : IAtom) =>
+      expr
+    case IBinFormula(Or, _, IBinFormula(Or, _ : IAtom, _)) =>
+      expr
+
+    case IBinFormula(Or, f1, IBinFormula(Or, f2@INot(_ : IAtom), f3)) =>
+      IBinFormula(Or, f2, IBinFormula(Or, f1, f3))
+    case IBinFormula(Or, f1 : IAtom, IBinFormula(Or, f2, f3)) =>
+      IBinFormula(Or, f2, IBinFormula(Or, f1, f3))
+
+    case IBinFormula(Or, f1, f2@INot(_ : IAtom)) =>
+      IBinFormula(Or, f2, f1)
+    case IBinFormula(Or, f1 : IAtom, f2) =>
+      IBinFormula(Or, f2, f1)
+
+    case _ =>
+      expr
+  }
+
+  private val rewritings =
+    Rewriter.combineRewritings(Array(sortLiterals _))
+  
+  protected override def furtherSimplifications(expr : IExpression) =
+    rewritings(expr)
+
 }

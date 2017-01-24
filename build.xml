@@ -16,7 +16,7 @@
     <property name="scala-xml.jar" value="${scala.home}/lib/scala-xml_2.11-1.0.4.jar"/>
     <property name="scala-parser-combinators.jar" value="${scala.home}/lib/scala-parser-combinators_2.11-1.0.4.jar"/>
     <property name="scala-compiler.jar" value="${scala.home}/lib/scala-compiler.jar" />
-    <property name="scalac.default.params" value="-deprecation -unchecked" />
+    <property name="scalac.default.params" value="-deprecation -unchecked -Xmax-classfile-name:255" />
 
     <!-- paths -->
     <property name="base.dir" value="${basedir}" />

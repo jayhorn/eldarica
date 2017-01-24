@@ -16,7 +16,7 @@
     <property name="scala-xml.jar" value="${scala.home}/lib/scala-xml_2.11-1.0.4.jar"/>
     <property name="scala-parser-combinators.jar" value="${scala.home}/lib/scala-parser-combinators_2.11-1.0.4.jar"/>
     <property name="scala-compiler.jar" value="${scala.home}/lib/scala-compiler.jar" />
-    <property name="scalac.default.params" value="-deprecation -unchecked -Xmax-classfile-name:254" />
+    <property name="scalac.default.params" value="-deprecation -unchecked" />
 
     <!-- paths -->
     <property name="base.dir" value="${basedir}" />
@@ -118,7 +118,7 @@
 	
     <target name="pre-parse" description="compiles the required sources to be able to compile the Cup parser">
         <mkdir dir="${build.dir}" />
-        <scalac srcdir="${sources.dir}" destdir="${build.dir}">
+        <scalac srcdir="${sources.dir}" destdir="${build.dir}" addparams="-Xmax-classfile-name 254">
             <include name="lazabs/ast/*" />
             <include name="lazabs/types/*" />
         	<include name="lazabs/horn/global/Horn.scala" />       	
@@ -132,7 +132,7 @@
     <target name="compile" description="compiles the files" depends="cupparser, hornparser">
         <mkdir dir="${build.dir}"  />
     	<mkdir dir="${dist.dir}"   />
-        <scalac srcdir="${sources.dir}" destdir="${build.dir}" force="changed" addparams="${scalac.default.params}">
+        <scalac srcdir="${sources.dir}" destdir="${build.dir}" force="changed" addparams="${scalac.default.params} -Xmax-classfile-name 254 ">
             <include name="**/*.scala" />
             <classpath>
             	<pathelement location="${scala-library.jar}" />

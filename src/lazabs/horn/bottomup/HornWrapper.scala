@@ -31,6 +31,7 @@
 package lazabs.horn.bottomup
 
 import ap.parser._
+import ap.basetypes.IdealInt
 import IExpression._
 import ap.SimpleAPI
 import ap.SimpleAPI.ProverStatus
@@ -83,14 +84,43 @@ class HornWrapper(constraints: Seq[HornClause],
     }
   }
 
+  //////////////////////////////////////////////////////////////////////////////
+
+  def elimClauseQuantifiers(clause : IFormula)
+                           (implicit p : SimpleAPI) : IFormula = {
+    // check whether some of the quantifier can be eliminated
+    def elimQuans(f : IFormula) : IFormula = f match {
+      case IQuantified(Quantifier.ALL, sub) =>
+        IQuantified(Quantifier.ALL, elimQuans(sub))
+      case matrix => {
+        val (otherAtoms, predAtoms) =
+          LineariseVisitor(matrix, IBinJunctor.Or) partition (
+            ContainsSymbol isPresburger _)
+
+        val arithVariables =
+          (SymbolCollector variables or(otherAtoms)) --
+          (SymbolCollector variables or(predAtoms))
+
+        val quanAtoms =
+          quanVars(Quantifier.ALL, arithVariables, or(otherAtoms))
+
+        (p simplify quanAtoms) ||| or(predAtoms)
+      }
+    }
+
+    elimQuans(Transform2NNF(Transform2Prenex(clause)))
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+
   def prettyPrintClause(clause : IFormula) = {
     val simpClause = TaskClauseSimplifier(clause)
 
     def sortVariables(c : IFormula) : IFormula = c match {
       case IQuantified(Quantifier.ALL, sub) =>
         IQuantified(Quantifier.ALL, sortVariables(sub))
-      case c => {
-        val atoms = LineariseVisitor(c, IBinJunctor.Or) filter {
+      case matrix => {
+        val atoms = LineariseVisitor(matrix, IBinJunctor.Or) filter {
           case f@INot(_ : IAtom) => true
           case f : IAtom => true
           case _ => false
@@ -98,16 +128,48 @@ class HornWrapper(constraints: Seq[HornClause],
         val vars = SymbolCollector variablesSorted or(atoms)
 
         if (vars.isEmpty) {
-          c
+          matrix
         } else {
-          val maxInd = (for (IVariable(v) <- vars) yield v).max
-          val permutation =
-            vars ++ (for (n <- 0 until maxInd;
-                          if !(vars contains v(n))) yield v(n))
-          val invPermutation = new Array[Int](maxInd + 1)
-          for ((IVariable(n), i) <- permutation.iterator.zipWithIndex)
-            invPermutation(n) = (maxInd - i) - n
-          VariablePermVisitor(c, IVarShift(invPermutation.toList, 0))
+          val permMatrix = {
+            val maxInd = (for (IVariable(v) <- vars) yield v).max
+            val permutation =
+              vars ++ (for (n <- 0 until maxInd;
+                            if !(vars contains v(n))) yield v(n))
+            val invPermutation = new Array[Int](maxInd + 1)
+            for ((IVariable(n), i) <- permutation.iterator.zipWithIndex)
+              invPermutation(n) = (maxInd - i) - n
+
+            VariablePermVisitor(matrix, IVarShift(invPermutation.toList, 0))
+          }
+
+          val simpMatrix = {
+            val offsetCollector = new OffsetCollectingVisitor
+            offsetCollector.visitWithoutResult(permMatrix, ())
+
+            if (offsetCollector.mapping.isEmpty) {
+              permMatrix
+            } else {
+              val maxInd =
+                (for ((IVariable(n), _) <- offsetCollector.mapping.iterator)
+                 yield n).max
+
+              val subst = Array.tabulate[ITerm](maxInd + 1)(v(_))
+              for ((IVariable(n), t) <- offsetCollector.mapping.iterator)
+                subst(n) = t
+
+              TaskClauseSimplifier(
+                VariableSubstVisitor(permMatrix, (subst.toList, 0)))
+            }
+          }
+
+          val (bodyLits, headLits) =
+            LineariseVisitor(simpMatrix, IBinJunctor.Or) partition {
+              case _ : IAtom => false
+              case _ => true
+            }
+
+          val body = TaskClauseSimplifier(!or(bodyLits))
+          body ===> or(headLits)
         }
       }
     }
@@ -266,12 +328,13 @@ class HornWrapper(constraints: Seq[HornClause],
             lazabs.GlobalParameters.get.didIgnoreCEX) {
           val fullSol = preprocBackTranslator translate res
 
+          if (lazabs.GlobalParameters.get.didIgnoreCEX)
+                              SimpleAPI.withProver { p =>
+
               println("**All Clauses")
               printSMTClauses(unsimplifiedClauses)
               println("**End Clauses")
 
-          if (lazabs.GlobalParameters.get.didIgnoreCEX)
-                              SimpleAPI.withProver { p =>
             // report clauses that are not yet satisfied
             // (which can only be assertion clauses)
             val violatedClauses = {
@@ -341,7 +404,7 @@ class HornWrapper(constraints: Seq[HornClause],
               addRelations(clause.predicates.toSeq.sortWith(
                            _.name < _.name))
               val intClause = asConjunction(substClause)
-              prettyPrintClause(Internal2InputAbsy(intClause, Map()))
+              prettyPrintClause(elimClauseQuantifiers(Internal2InputAbsy(intClause, Map()))(p))
               println("---")
             }
 
@@ -707,4 +770,35 @@ object TaskClauseSimplifier extends Simplifier(0, false) {
   protected override def furtherSimplifications(expr : IExpression) =
     rewritings(expr)
 
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+class OffsetCollectingVisitor extends CollectingVisitor[Unit, Unit] {
+  val mapping = new MHashMap[IVariable, ITerm]
+
+  override def preVisit(t : IExpression, arg : Unit) : PreVisitResult =
+    t match {
+      case IPlus(offset : IIntLit, bvar : IVariable)
+          if !(mapping contains bvar) => {
+        mapping.put(bvar, bvar - offset)
+        KeepArg
+      }
+      case IPlus(offset : IIntLit,
+                 ITimes(IdealInt.MINUS_ONE, bvar : IVariable))
+          if !(mapping contains bvar) => {
+        mapping.put(bvar, offset - bvar)
+        KeepArg
+      }
+      case t : IVariable if !(mapping contains t) => {
+        mapping.put(t, t)
+        KeepArg
+      }
+      case _ : IQuantified | _ : IEpsilon | _ : IIntFormula =>
+        ShortCutResult(())
+      case _ =>
+        KeepArg
+    }
+
+  def postVisit(t : IExpression, arg : Unit, subres : Seq[Unit]) : Unit = ()
 }

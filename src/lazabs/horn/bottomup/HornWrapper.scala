@@ -37,7 +37,8 @@ import ap.SimpleAPI
 import ap.SimpleAPI.ProverStatus
 import ap.util.Seqs
 
-import lazabs.horn.preprocessor.{DefaultPreprocessor, HornPreprocessor}
+import lazabs.horn.preprocessor.{DefaultPreprocessor, HornPreprocessor,
+                                 AbductionPreprocessor}
 import lazabs.horn.bottomup.HornClauses._
 import lazabs.horn.global._
 import lazabs.utils.Manip._
@@ -88,7 +89,7 @@ class HornWrapper(constraints: Seq[HornClause],
 
   def elimClauseQuantifiers(clause : IFormula)
                            (implicit p : SimpleAPI) : IFormula = {
-    // check whether some of the quantifier can be eliminated
+    // check whether some of the quantifiers can be eliminated
     def elimQuans(f : IFormula) : IFormula = f match {
       case IQuantified(Quantifier.ALL, sub) =>
         IQuantified(Quantifier.ALL, elimQuans(sub))
@@ -108,7 +109,7 @@ class HornWrapper(constraints: Seq[HornClause],
       }
     }
 
-    elimQuans(Transform2NNF(Transform2Prenex(clause)))
+    elimQuans(Transform2NNF(clause)) // Transform2Prenex(clause)))
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -179,6 +180,257 @@ class HornWrapper(constraints: Seq[HornClause],
     PrincessLineariser printExpression simpClause2
     println
   }
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  def outputAbductionTask(fullSol : HornPreprocessor.Solution)
+                         : Unit = SimpleAPI.withProver { p =>
+    implicit val _ = p
+
+    println("**All Clauses")
+    printSMTClauses(unsimplifiedClauses)
+    println("**End Clauses")
+
+    // report clauses that are not yet satisfied
+    // (which can only be assertion clauses)
+    val violatedClauses = {
+      import p._
+      for (clause@Clause(head, body, constraint) <-
+             unsimplifiedClauses;
+           if (head.pred == HornClauses.FALSE);
+           if (scope {
+                 addConstants(clause.constants.toSeq.sortWith(
+                   _.name < _.name))
+                 !! (constraint)
+                 for (IAtom(pred, args) <- body)
+                   !! (subst(fullSol(pred), args.toList, 0))
+                 ?? (false)
+                 ??? != ProverStatus.Valid
+               }))
+      yield clause
+    }
+
+    println
+    println("**VIOLATED CLAUSES:")
+    printSMTClauses(violatedClauses)
+    println("**End Violated")
+
+    val (abductionClauses, violatingPreds) =
+      augmentAbductionClauseSetClever(violatedClauses, fullSol)
+
+    println
+    println("**Violating Predicates:")
+    for (pred <- violatingPreds.toList.sortWith(
+                   _.name < _.name)) p.scope {
+      import p._
+      println(pred.name + "(" +
+            (for (i <- 0 until pred.arity) yield ("v" + i)).mkString(", ") + "):")
+      val consts = createConstants("v", 0 until pred.arity).toList
+      val sol = VariableSubstVisitor(fullSol(pred), (consts, 0))
+      PrincessLineariser printExpression sol
+      println
+    }
+    println("**End Predicates")
+     
+    println
+    println("**Instantiated Clauses with Violating Predicates:")
+
+    val predicateMapping =
+      fullSol filterKeys { p => !(violatingPreds contains p) }
+
+    for (clause <- abductionClauses) {
+      prettyPrintClause(elimClauseQuantifiers(clause.toFormula))
+      println("---")
+    }
+
+    println("**End Clauses")
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  def instantiateClauses(clauses : Seq[Clause],
+                         violatingPreds : Set[Predicate],
+                         fullSol : HornPreprocessor.Solution)
+                        (implicit p : SimpleAPI) : Seq[IFormula] = {
+    val predicateMapping =
+      fullSol filterKeys { p => !(violatingPreds contains p) }
+
+    for (clause <- clauses) yield p.scope {
+      import p._
+
+      val substClause =
+        UniformSubstVisitor(clause.toFormula, predicateMapping)
+      addRelations(clause.predicates.toSeq.sortWith(
+                   _.name < _.name))
+      val intClause = asConjunction(substClause)
+      elimClauseQuantifiers(Internal2InputAbsy(intClause, Map()))
+    }
+  }
+
+  def instantiateClauses2(clauses : Seq[Clause],
+                          violatingPreds : Set[Predicate],
+                          fullSol : HornPreprocessor.Solution)
+                         (implicit p : SimpleAPI) : Seq[Clause] = {
+    val predicateMapping =
+      fullSol filterKeys { p => !(violatingPreds contains p) }
+
+    val newClauses = for (clause <- clauses) yield p.scope {
+      import p._
+
+      val instClause = clause instantiatePredicates predicateMapping
+
+      // simplify the new constraint
+      addConstants(instClause.constants.toSeq.sortBy(_.name))
+      val intConstraint = asConjunction(instClause.constraint)
+      Clause(instClause.head, instClause.body,
+             Internal2InputAbsy(intConstraint, Map()))
+    }
+
+    newClauses filterNot (_.hasUnsatConstraint)
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  def augmentAbductionClauseSetSimple(violatedClauses : Seq[Clause],
+                                      fullSol : HornPreprocessor.Solution)
+                                     (implicit p : SimpleAPI)
+                                     : (Seq[Clause], Set[Predicate]) = {
+    val violatingPreds =
+      (for (clause <- violatedClauses.iterator;
+            p <- clause.predicates.iterator;
+            if p != HornClauses.FALSE)
+       yield p).toSet
+
+    val relatedClauses =
+      (for (clause <- unsimplifiedClauses.iterator;
+            if !Seqs.disjoint(violatingPreds, clause.predicates) &&
+               !(violatedClauses contains clause))
+       yield clause).toList
+
+    (instantiateClauses2(violatedClauses ++ relatedClauses, violatingPreds, fullSol),
+     violatingPreds)
+  }
+
+  def augmentAbductionClauseSetClever(violatedClauses : Seq[Clause],
+                                      fullSol : HornPreprocessor.Solution)
+                                     (implicit p : SimpleAPI)
+                                     : (Seq[Clause], Set[Predicate]) = {
+    var violatingPreds =
+      (for (clause <- violatedClauses.iterator;
+            p <- clause.predicates.iterator;
+            if p != HornClauses.FALSE)
+       yield p).toSet
+
+    var relatedClauses : Seq[Clause] = List()
+    var simpClauses : Seq[Clause] = List()
+
+    def isSat : Boolean = {
+      relatedClauses =
+        (for (clause <- unsimplifiedClauses.iterator;
+              if !Seqs.disjoint(violatingPreds, clause.predicates))
+         yield clause).toList
+
+      val instClauses = instantiateClauses2(relatedClauses, violatingPreds, fullSol)
+
+      // check that the problem cannot be solved by simple pre-processing
+      simpClauses =
+        AbductionPreprocessor.process(instClauses,
+                                      HornPreprocessor.EmptyVerificationHints)._1
+
+/*      println("related:")
+      printSMTClauses(relatedClauses)
+
+      println("checking:")
+      printSMTClauses(simpClauses) */
+
+      isSatHeuristic(simpClauses)
+    }
+
+    println
+
+    // add predicates until the select clauses become unsat
+    while (!isSat) {
+       // need to consider a larger set of clauses
+       val instPreds = (for (clause <- relatedClauses.iterator;
+                             p <- clause.predicates.iterator;
+                             if !(violatingPreds contains p);
+                             if p != HornClauses.FALSE)
+                        yield p).toSeq.sortBy(_.name)
+       if (instPreds.isEmpty)
+         throw new Exception(
+           "Could not extract an abduction problem, clauses are unsat")
+       println("adding predicate " + instPreds.head)
+       violatingPreds = violatingPreds + instPreds.head
+    }
+
+    // remove predicates to find a minimal set
+/*
+    val selPreds = violatingPreds.toSeq.sortBy(_.name)
+    for (pred <- selPreds) {
+      violatingPreds = violatingPreds - pred
+      if (!isSat)
+        violatingPreds = violatingPreds + pred
+      else
+         println("removing predicate " + pred)
+    }
+
+    isSat
+*/
+
+    // remove clauses to find a minimal, non-trivial set
+    simpClauses = simpClauses sortBy {
+      case c if c.body.isEmpty => 0
+      case c if c.head.pred == HornClauses.FALSE => 1
+      case _ => 2
+    }
+
+    for (clause <- simpClauses.toList) {
+      val newClauseList = simpClauses filterNot (_ == clause)
+      val simpsimp = 
+        AbductionPreprocessor.process(newClauseList,
+                                      HornPreprocessor.EmptyVerificationHints)._1
+      if (!(simpsimp forall { clause =>
+              clause.predicates subsetOf Set(HornClauses.FALSE) }))
+        simpClauses = newClauseList
+    }
+
+    simpClauses =
+      AbductionPreprocessor.process(simpClauses,
+                                    HornPreprocessor.EmptyVerificationHints)._1
+
+    simpClauses = simpClauses sortBy {
+      case c if c.body.isEmpty => 0
+      case c if c.head.pred == HornClauses.FALSE => 2
+      case _ => 1
+    }
+
+    violatingPreds =
+      (for (clause <- simpClauses.iterator;
+            p <- clause.predicates.iterator;
+            if p != HornClauses.FALSE)
+       yield p).toSet
+
+    (simpClauses, violatingPreds)
+  }
+
+  def isSatHeuristic(clauses : Seq[Clause])
+                    (implicit p : SimpleAPI) : Boolean = p.scope {
+    import p._
+    try { withTimeout(3000) {
+      val allPreds = (for (clause <- clauses.iterator;
+                           p <- clause.predicates.iterator)
+                      yield p).toSeq.sortBy(_.name)
+      addRelations(allPreds)
+      for (clause <- clauses)
+        !! (clause.toFormula)
+      ??? == ProverStatus.Sat
+    } } catch {
+      case SimpleAPI.TimeoutException =>
+        true
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
 
   private val translator = new HornTranslator
   import translator._
@@ -328,88 +580,8 @@ class HornWrapper(constraints: Seq[HornClause],
             lazabs.GlobalParameters.get.didIgnoreCEX) {
           val fullSol = preprocBackTranslator translate res
 
-          if (lazabs.GlobalParameters.get.didIgnoreCEX)
-                              SimpleAPI.withProver { p =>
-
-              println("**All Clauses")
-              printSMTClauses(unsimplifiedClauses)
-              println("**End Clauses")
-
-            // report clauses that are not yet satisfied
-            // (which can only be assertion clauses)
-            val violatedClauses = {
-              import p._
-              for (clause@Clause(head, body, constraint) <-
-                     unsimplifiedClauses;
-                   if (head.pred == HornClauses.FALSE);
-                   if (scope {
-                         addConstants(clause.constants.toSeq.sortWith(
-                           _.name < _.name))
-                         !! (constraint)
-                         for (IAtom(pred, args) <- body)
-                           !! (subst(fullSol(pred), args.toList, 0))
-                         ?? (false)
-                         ??? != ProverStatus.Valid
-                       }))
-              yield clause
-            }
-
-            println
-            println("**VIOLATED CLAUSES:")
-            printSMTClauses(violatedClauses)
-            println("**End Violated")
-
-            val violatingPreds =
-              (for (clause <- violatedClauses.iterator;
-                    p <- clause.predicates.iterator;
-                    if p != HornClauses.FALSE)
-               yield p).toSet
-
-            println
-            println("**Violating Predicates:")
-            for (pred <- violatingPreds.toList.sortWith(
-                           _.name < _.name)) p.scope {
-              import p._
-              println(pred.name + "(" +
-                    (for (i <- 0 until pred.arity) yield ("v" + i)).mkString(", ") + "):")
-              val consts = createConstants("v", 0 until pred.arity).toList
-              val sol = VariableSubstVisitor(fullSol(pred), (consts, 0))
-              PrincessLineariser printExpression sol
-              println
-            }
-            println("**End Predicates")
-             
-            val relatedClauses =
-              (for (clause <- unsimplifiedClauses.iterator;
-                    if !Seqs.disjoint(violatingPreds, clause.predicates) &&
-                       !(violatedClauses contains clause))
-               yield clause).toList
-
-            println
-            println("**Other Clauses with Violating Predicates:")
-            printSMTClauses(relatedClauses)
-            println("**End Clauses")
-
-            println
-            println("**Instantiated Clauses with Violating Predicates:")
-
-            val predicateMapping =
-              fullSol filterKeys { p => !(violatingPreds contains p) }
-
-            for (clause <- relatedClauses) p.scope {
-              import p._
-
-              val substClause =
-                UniformSubstVisitor(clause.toFormula, predicateMapping)
-              addRelations(clause.predicates.toSeq.sortWith(
-                           _.name < _.name))
-              val intClause = asConjunction(substClause)
-              prettyPrintClause(elimClauseQuantifiers(Internal2InputAbsy(intClause, Map()))(p))
-              println("---")
-            }
-
-            println("**End Clauses")
-
+          if (lazabs.GlobalParameters.get.didIgnoreCEX) {
+            outputAbductionTask(fullSol)
           } else
 
           // verify correctness of the solution

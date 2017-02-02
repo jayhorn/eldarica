@@ -223,6 +223,26 @@ object HornClauses {
       quanConsts(Quantifier.ALL, constants.toSeq, matrix)
     }
 
+    def instantiatePredicates(mapping : Map[Predicate, IFormula]) : Clause = {
+      import IExpression._
+
+      val (headFor, newHead) = head.pred match {
+        case pred if (mapping contains pred) =>
+          (VariableSubstVisitor(mapping(pred), (head.args.toList, 0)),
+           FALSE())
+        case _ => (i(false), head)
+      }
+
+      val (substBodyLits, newBody) = body partition (mapping contains _.pred)
+      val substBody =
+        and(for (a <- substBodyLits)
+            yield VariableSubstVisitor(mapping(a.pred), (a.args.toList, 0)))
+
+      val newConstraint = (constraint &&& substBody) &&& ~headFor
+
+      Clause(newHead, newBody, newConstraint)
+    }
+
     def toSMTString : String = SMTLineariser asString this.toFormula
 
     def toPrettyString : String =

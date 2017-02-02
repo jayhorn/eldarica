@@ -30,6 +30,7 @@
 package lazabs.horn.preprocessor
 
 import ap.parser._
+import ap.SimpleAPI
 import IExpression._
 
 import lazabs.horn.bottomup.HornClauses
@@ -119,6 +120,81 @@ class DefaultPreprocessor extends HornPreprocessor {
     Console.err.println
 
     (curClauses, curHints, new ComposedBackTranslator(translators.reverse))
+  }
+
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+object AbductionPreprocessor extends HornPreprocessor {
+  import HornPreprocessor._
+
+  val name : String = "abduction simplifier"
+
+  def process(clauses : Clauses, hints : VerificationHints)
+             : (Clauses, VerificationHints, BackTranslator) = {
+    var curClauses = clauses
+    var curHints = hints
+
+    val translators = new ArrayBuffer[BackTranslator]
+
+    def applyStage(stage : HornPreprocessor) = {
+      val (newClauses, newHints, translator) =
+        stage.process(curClauses, curHints)
+      curClauses = newClauses
+      curHints = newHints
+
+      translators += translator
+    }
+
+    // Apply clause simplification and inlining repeatedly, if necessary
+    applyStage(ReachabilityChecker)
+    applyStage(DefinitionInliner)
+    applyStage(new ClauseInliner)
+    applyStage(ConstraintSatChecker)
+
+    var lastSize = -1
+    while (lastSize != curClauses.size) {
+      lastSize = curClauses.size
+      applyStage(ReachabilityChecker)
+      applyStage(DefinitionInliner)
+      applyStage(new ClauseInliner)
+      applyStage(ConstraintSatChecker)
+    }
+
+    (curClauses, curHints, new ComposedBackTranslator(translators.reverse))
+  }
+
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Remove all clauses with unsatisfiable constraint
+object ConstraintSatChecker extends HornPreprocessor {
+  import HornPreprocessor._
+
+  val name : String = "constraint sat checker"
+
+  def process(clauses : Clauses, hints : VerificationHints)
+             : (Clauses, VerificationHints, BackTranslator) = {
+    val newClauses = SimpleAPI.withProver { p =>
+      import p._
+
+      for (clause <- clauses;
+           if !(clause.body contains clause.head);
+           if (try { p.scope {
+             addRelations(clause.predicates.toSeq)
+             ?? (clause.toFormula)
+             withTimeout(1000) {
+               ??? != SimpleAPI.ProverStatus.Valid
+             }
+           } } catch {
+             case SimpleAPI.TimeoutException => true
+           }))
+      yield clause
+    }
+
+    (newClauses, hints, HornPreprocessor.IDENTITY_TRANSLATOR)
   }
 
 }
